@@ -44,6 +44,43 @@ class WorstCaseStackParser(object):
         self.call_graph = {"locals": {}, "globals": {}, "weak": {}}
         self.dot_c_included = dot_c_included
 
+    def parse_files(self, output_file=None):
+         # Find the appropriate RTL extension
+        self.find_rtl_ext()
+
+        # Find all input files
+
+        tu_list, manual_list = self.find_files()
+
+        # Read the input files
+        for tu in tu_list:
+            self.read_obj(tu)  # This must be first
+
+        for fxn in self.call_graph["weak"].values():
+            if fxn["name"] not in self.call_graph["globals"].keys():
+                self.call_graph["globals"][fxn["name"]] = fxn
+
+        for tu in tu_list:
+            self.read_rtl(tu)
+        for tu in tu_list:
+            self.read_su(tu)
+
+        # Read manual files
+        for m in manual_list:
+            self.read_manual(m)
+
+        # Validate Data
+        self.validate_all_data()
+
+        # Resolve All Function Calls
+        self.resolve_all_calls()
+
+        # Calculate Worst Case Stack For Each Function
+        self.calc_all_wcs()
+
+        # Print A Nice Message With Each Function and the WCS
+        self.print_all_fxns(output_file)
+
     def read_symbols(self, file):
         from subprocess import check_output
 
@@ -207,8 +244,8 @@ class WorstCaseStackParser(object):
         :return:
         """
 
-        su_line = re.compile(r'^([^ :]+):([\d]+):([\d]+):(.+)\t(\d+)\t(\S+)$')
-        su_line_alt = re.compile(
+        su_line_alt = re.compile(r'^([^ :]+):([\d]+):([\d]+):(.+)\t(\d+)\t(\S+)$')
+        su_line = re.compile(
             r"([^\n:]+):([\d]+):([\d]+):([\w\d\s\*_]+)\s+([\w\d_]+)\(.*\)\t+(\d+)\t+"
         )
         file = tu if self.dot_c_included else tu[0 : tu.rindex(".")]
@@ -219,15 +256,15 @@ class WorstCaseStackParser(object):
             if m is None:
                 m = su_line_alt.match(line)
                 if m:
-                    fxn = m.group(5)
+                    fxn = m.group(4)
                     fxn_dict2 = self.find_demangled_fxn(tu, fxn)
-                    fxn_dict2["local_stack"] = int(m.group(6))
+                    fxn_dict2["local_stack"] = int(m.group(5))
                 else:
                     print("error parsing line {} in file {}".format(i, file))
             else:
-                fxn = m.group(4)
+                fxn = m.group(5)
                 fxn_dict2 = self.find_demangled_fxn(tu, fxn)
-                fxn_dict2["local_stack"] = int(m.group(5))
+                fxn_dict2["local_stack"] = int(m.group(6))
 
     def read_manual(self, file):
         """
@@ -353,8 +390,8 @@ class WorstCaseStackParser(object):
             for fxn_dict in l_dict.values():
                 calc_wcs(fxn_dict, self.call_graph, [])
 
-    def print_all_fxns(self):
-        def print_fxn(row_format, fxn_dict2):
+    def print_all_fxns(self, output_file=None):
+        def print_fxn(row_format, fxn_dict2, output_file=None):
             unresolved = fxn_dict2["unresolved_calls"]
             stack = str(fxn_dict2["wcs"])
             if unresolved:
@@ -364,11 +401,14 @@ class WorstCaseStackParser(object):
             else:
                 unresolved_str = ""
 
-            print(
-                row_format.format(
+            out_string = row_format.format(
                     fxn_dict2["tu"], fxn_dict2["demangledName"], stack, unresolved_str
                 )
-            )
+            print( out_string )
+            if output_file:
+                with open(output_file, "a") as of:
+                    of.write(out_string+"\n")
+
 
         def get_order(val):
             if val == "unbounded":
@@ -401,13 +441,15 @@ class WorstCaseStackParser(object):
 
         # Print out the table
         print("")
-        print(
-            row_format.format(
+        out_string = row_format.format(
                 "Translation Unit", "Function Name", "Stack", "Unresolved Dependencies"
             )
-        )
+        print(out_string)
+        if output_file:
+            with open(output_file, "w") as of:
+                of.write(out_string +"\n")
         for d in d_list:
-            print_fxn(row_format, d)
+            print_fxn(row_format, d, output_file)
 
     def find_rtl_ext(self):
         # Find the rtl_extension
@@ -510,6 +552,14 @@ def main(argv):
         default=".",
         help="Base directory for files. Will be recursively scanned.",
     )
+
+    parser.add_argument(
+        "--output",
+        dest="out_file",
+        default=None,
+        help="Output file to write stack usage report to.",
+    )
+
     args = parser.parse_args()
     print(args.obj_ext)
     wcs_parser = WorstCaseStackParser(
@@ -520,44 +570,10 @@ def main(argv):
         manual_ext=".msu",
         read_elf_path=args.read_elf_path,
         stdout_encoding="utf-8",
-        dot_c_included = args.dot_c_included
+        dot_c_included = args.dot_c_included,
     )
 
-    # Find the appropriate RTL extension
-    wcs_parser.find_rtl_ext()
-
-    # Find all input files
-
-    tu_list, manual_list = wcs_parser.find_files()
-
-    # Read the input files
-    for tu in tu_list:
-        wcs_parser.read_obj(tu)  # This must be first
-
-    for fxn in wcs_parser.call_graph["weak"].values():
-        if fxn["name"] not in wcs_parser.call_graph["globals"].keys():
-            wcs_parser.call_graph["globals"][fxn["name"]] = fxn
-
-    for tu in tu_list:
-        wcs_parser.read_rtl(tu)
-    for tu in tu_list:
-        wcs_parser.read_su(tu)
-
-    # Read manual files
-    for m in manual_list:
-        wcs_parser.read_manual(m)
-
-    # Validate Data
-    wcs_parser.validate_all_data()
-
-    # Resolve All Function Calls
-    wcs_parser.resolve_all_calls()
-
-    # Calculate Worst Case Stack For Each Function
-    wcs_parser.calc_all_wcs()
-
-    # Print A Nice Message With Each Function and the WCS
-    wcs_parser.print_all_fxns()
+    wcs_parser.parse_files(args.out_file)
 
 
 if __name__ == "__main__":
